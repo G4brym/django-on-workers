@@ -69,3 +69,6 @@ jspm_packages/
 .idea
 node_modules
 staticfiles
+python_modules
+.venv
+.venv-workers

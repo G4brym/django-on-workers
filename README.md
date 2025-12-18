@@ -1,171 +1,213 @@
 # Django on Workers
 
-This example project demonstrates how to deploy Django on Cloudflare Workers. Given Django's complexity and the unique
-constraints of the Cloudflare Workers environment, several adaptations are necessary.
+This template provides a starting point for running a Django application on Cloudflare Workers, utilizing Cloudflare D1 for serverless SQL database and R2 for media files storage.
 
-Current Limitations:
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/G4brym/django-on-workers/tree/main)
 
-Django's ORM and Models currently lack full asynchronous support. While Django can perform some async operations like
-aget and asave, the underlying database engine does not support asynchronous connections, which means features like
-using D1 as a backend database are not fully feasible yet. Django Admin, is also not available for this reason.
+## Overview
 
-- ORM and Models: As previously discussed, Django's ORM and Models currently lack full asynchronous support. While
-  Django can perform some async operations like `aget` and `asave`, the underlying database engine and sql compiler does
-  not support asynchronous connections, which means features like using D1 as a backend database are not fully feasible yet.
-  Django Admin, is also not available for this reason.
-- Translations: Django's translation mechanism reads from disk files by default, which isn't possible in a worker
-  environment where there's no persistent file system. This means that translations cannot be used out of the box.
-- Timezones: Time zones are disabled in this setup, but re-enabling them should be relatively straightforward with some
-  adjustments to how Django handles time.
-- Startup Time:
-    - Cold Workers: Startup takes approximately 8 seconds. This is the time for initializing a new worker instance which
-      hasn't run recently.
-    - Hot Workers: For workers that have been recently active, or "hot", the startup time reduces significantly to
-      around 300 milliseconds.
+This template is pre-configured to:
+- Use `django-cf` to bridge Django with Cloudflare's environment.
+- Employ Cloudflare D1 as the primary data store through the `django_cf.db.backends.d1` database engine.
+- Use Cloudflare R2 for object storage and media file management through the `django_cf.storage.R2Storage` backend.
+- Include a basic Django project structure within the `src/` directory.
+- Provide example worker entrypoint (`src/index.py`).
 
-## How it works
+## Project Structure
 
-Currently, Python on workers does not support external packages, although support is expected soon. However, you can
-work around this limitation by copying the source code of the necessary packages directly into your project folder.
-
-Some packages also require modifications to function on workers because not all APIs are available. For instance,
-Django's default method for reading translations from files is not feasible in a live worker environment, hence these
-functionalities need to be disabled.
-
-Additionally, some features of packages might not be fully operational. This is particularly true for Django's ORM and
-Models. TL;DR: Django has a way to go before it becomes fully asynchronous. While some parts have been updated for async
-operations, the ORM and Models still lack support for asynchronous database drivers. This means that although Django can
-handle asynchronous `aget` and `asave` methods, it cannot utilize asynchronous database interactions like binding with
-D1 as
-a backend database. However, within Django views, you can still directly use D1 with:
-`await request.scope['env'].DB.prepare("PRAGMA table_list").all().to_py()`.
-
-You might consider using the D1 API as a backend database since there are existing drivers for this. For example, I
-developed the [django-cf](https://github.com/G4brym/django-cf) library which facilitates this integration. Nonetheless,
-several issues persist:
-
-- Pyodide Limitations: Pyodide does not support full Python socket functionality, which excludes the use of Python's
-  default HTTP library.
-- JavaScript Limitations: The synchronous JavaScript HTTP library `XMLHttpRequest` is unavailable on Cloudflare Workers,
-  and
-  using the `fetch` API would again run into the issue of drivers not supporting async operations.
-- Threading API Constraints: Due to limitations in Pyodide's threading API, it's not feasible to run the async D1
-  binding
-  in a separate thread and have the Django application wait for its completion.
-
-I was also unable to connect to hyperdrive (or any other postgres2 server) because `psycopg2` and `psycopg3` relies on
-cPython modules, and from what it seems wrangler was not importing theses.
-
-#### Will ORM and Models ever work?
-
-Absolutely!
-
-I've had discussions with the Python on Workers team, and they are enthusiastic about providing full support for Django.
-They are actively developing features to make this possible.
-
-The team has outlined a couple of strategies moving forward:
-
-- Waiting for [JSPI](https://v8.dev/blog/jspi) Support on Workers: This advancement would facilitate better
-  JavaScript-Python interoperability, which could be crucial for Django integration.
-- Durable Objects in Python: This option is particularly intriguing. If Django could operate within a Durable
-  Object, it would gain access to synchronous SQLite connections internally, enhancing its compatibility with the worker
-  environment.
-
-## Getting Started
-
-Create a python 3.11 or higher environment
-
-Create a project with C3
-
-```bash
-npm create cloudflare@latest django-on-workers -- --template "g4brym/django-on-workers"
-cd django-on-workers
+```
+template-root/
+ |-> src/
+ |    |-> manage.py             # Django management script
+ |    |-> index.py              # Cloudflare Worker entrypoint
+ |    |-> app/                  # Your Django project (rename as needed)
+ |    |    |-> settings.py       # Django settings, configured for D1, R2 and others
+ |    |    |-> urls.py           # Django URLs, includes management endpoints
+ |    |    |-> wsgi.py           # WSGI application
+ |    |-> your_django_apps/     # Add your Django apps here
+ |-> staticfiles/              # Collected static files (after build)
+ |-> .gitignore
+ |-> package.json              # For Node.js dependencies like wrangler
+ |-> uv.lock                   # Python dependencies lock file
+ |-> pyproject.toml            # Python project configuration
+ |-> wrangler.jsonc            # Wrangler configuration
 ```
 
-Install Python Dependencies (note the file name is not requirements.txt, for it to not be picked up by wrangler)
+## Setup and Deployment
 
-```bash
-pip install -r requirements-dev.txt
-```
+1.  **Install Dependencies:**
+    Ensure you have Node.js, npm, and Python installed. Then:
+    
+    ```bash
+    # Install Node.js dependencies
+    npm install
+    
+    # Install Python dependencies
+    uv sync
+    ```
+    
+    If you don't have `uv` installed, install it first:
+    ```bash
+    pip install uv
+    ```
 
-Install and patch django
+2.  **Configure `wrangler.jsonc`:**
+    Review and update `wrangler.jsonc` for your project. Key sections:
+    *   `name`: Your worker's name.
+    *   `compatibility_date`: Keep this up-to-date.
+    *   `d1_databases`:
+        *   `binding`: The name used to access the D1 database in your worker (e.g., "DB").
+        *   `database_name`: The name of your D1 database in the Cloudflare dashboard.
+        *   `database_id`: The ID of your D1 database.
 
-```bash
-python patch_django.py src
-```
+    Example `d1_databases` configuration in `wrangler.jsonc`:
+    ```jsonc
+    {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my-django-db",
+          "database_id": "your-d1-database-id-here"
+        }
+      ]
+    }
+    ```
 
-Collect static files
+3.  **Django Settings (`src/app/settings.py`):**
+    The template should be configured to use D1 binding:
+    ```python
+    # src/app/settings.py
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django_cf.db.backends.d1',
+            # This name 'DB' must match the 'binding' in your wrangler.jsonc d1_databases section
+            'CLOUDFLARE_BINDING': 'DB',
+        }
+    }
+    ```
 
-```bash
-python src/manage.py collectstatic
-```
+4.  **Worker Entrypoint (`src/index.py`):**
+    This file contains the main worker handler for your Django application.
+    ```python
+    from workers import WorkerEntrypoint
+    from django_cf import DjangoCF
+    from app.wsgi import application
 
-Run the App
+    class Default(DjangoCF, WorkerEntrypoint):
+        async def get_app(self):
+            return application
+    ```
 
-```bash
-wrangler dev
-```
+5.  **Run Development Server:**
+    ```bash
+    npm run dev
+    ```
+    This starts the local development server using Wrangler.
 
-You can now open your browser at `http://localhost:8787/` and check your new django app.
-There is already a pre-setup D1 example view at `http://localhost:8787/example-d1`.
+6.  **Deploy to Cloudflare:**
+    ```bash
+    npm run deploy
+    ```
+    This command installs system dependencies and deploys your worker to Cloudflare.
 
-By default, wrangler will run the ASGI version, but both a WSGI and ASGI are included.
-It's recommended to stick to ASGI to support async calls, like D1 and more.
+## R2 Storage Configuration
 
-## Deploying
+This template includes support for Cloudflare R2 object storage for handling file uploads and media files.
 
-Install and patch django
+### Setup R2 Storage
 
-```bash
-python patch_django.py src
-```
+1.  **Configure `wrangler.jsonc`:**
+    Add your R2 bucket binding:
+    ```jsonc
+    {
+      "r2_buckets": [
+        {
+          "binding": "BUCKET",
+          "bucket_name": "my-django-bucket"
+        }
+      ]
+    }
+    ```
 
-Deploy it
+2.  **Django Settings (`src/app/settings.py`):**
+    Configure the R2 storage backend:
+    ```python
+    MEDIA_URL = 'https://pub-xxxxx.r2.dev/'
+    
+    STORAGES = {
+        "default": {
+            "BACKEND": "django_cf.storage.R2Storage",
+            "OPTIONS": {
+                "binding": "BUCKET",
+                "location": "media",
+                "allow_overwrite": False,
+            }
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    ```
 
-```bash
-wrangler deploy
-```
+3.  **Usage in Django:**
+    ```python
+    from django.core.files.base import ContentFile
+    from django.core.files.storage import default_storage
+    
+    # Save a file
+    content = ContentFile(b"Hello, R2!")
+    path = default_storage.save("hello.txt", content)
+    
+    # Read a file
+    with default_storage.open("hello.txt", "rb") as f:
+        content = f.read()
+    
+    # Check if file exists
+    exists = default_storage.exists("hello.txt")
+    
+    # Delete a file
+    default_storage.delete("hello.txt")
+    ```
 
-**Warning**
+### R2 Storage Features
 
-Django is a very big framework, and when compressed for uploading, it exceeds the 1MB max upload size.
-This means only account with the Workers Paid plan (5$ a month) can deploy this.
+- **Serverless Object Storage**: Store files in Cloudflare's globally distributed object storage.
+- **S3-Compatible API**: R2 uses an S3-compatible API accessible through Workers bindings.
+- **No Egress Fees**: R2 has no egress fees, making it cost-effective for serving files.
+- **Integrated with Workers**: Direct access to R2 buckets through Worker bindings.
 
-You can always thinker with it, and delete unused packages (like DB drivers, etc) to get your worker under the limit!
+For more details on R2 storage configuration and access control options, refer to the [django-cf documentation](https://github.com/G4brym/django-cf#cloudflare-r2-storage).
 
-## Snippets
+## Running Management Commands
 
-#### Reading data from D1
+For D1, you can use the special management endpoints provided in the template:
 
-```python
-from django.http import JsonResponse
+*   **`/__run_migrations__/`**: Triggers the `migrate` command.
+*   **`/__create_admin__/`**: Creates a superuser (username: 'admin', password: 'password').
 
+These endpoints are defined in `src/app/urls.py` and are protected by `user_passes_test(is_superuser)`. This means you must first create an admin user and be logged in as that user to access these endpoints.
 
-async def example_d1(request):
-    results = await request.scope['env'].DB.prepare("PRAGMA table_list").all()
+**Initial Admin User Creation:**
+For the very first admin user creation, you might need to temporarily remove the `@user_passes_test(is_superuser)` decorator from `create_admin_view` in `src/app/urls.py`, deploy, access `/__create_admin__/`, and then reinstate the decorator and redeploy. Alternatively, modify the `create_admin_view` to accept a secure token or other mechanism for the initial setup if direct unauthenticated access is undesirable.
 
-    return JsonResponse(results.to_py())
-```
+**Accessing the Endpoints:**
+Once deployed and an admin user exists (and you are logged in as them):
+- Visit `https://your-worker-url.com/__run_migrations__/` to apply migrations.
+- Visit `https://your-worker-url.com/__create_admin__/` to create the admin user if needed.
 
-#### Serving static files
+Check the JSON response in your browser to see the status of the command.
 
-Static files are served by [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
+## Development Notes
 
-Just add this line into your wrangler.toml
+*   **D1 Limitations:**
+    *   **Transactions are disabled** for D1. Every query is committed immediately. This is a fundamental aspect of D1.
+    *   The D1 backend has some limitations compared to traditional SQLite or other SQL databases. Many advanced ORM features or direct SQL functions (especially those used in Django Admin) might not be fully supported. Refer to the `django-cf` README and official Cloudflare D1 documentation.
+    *   Django Admin functionality might be limited.
+*   **Local Testing with D1:**
+    *   Wrangler allows local development and can simulate D1 access. `npx wrangler dev --remote` can connect to your actual D1 database for more accurate testing.
+*   **Security:**
+    *   The management command endpoints are protected by Django's `user_passes_test(is_superuser)`. Ensure they are properly secured before deploying to production.
+    *   Protect your Cloudflare credentials and API tokens.
 
-```toml
-assets = { directory = "./staticfiles/" }
-```
-
-And this two variables to your django settings file
-
-```python
-STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR.parent.joinpath('staticfiles').joinpath('static')
-```
-
-Then run collect static
-
-```bash
-python src/manage.py collectstatic
-```
+---
+*For more details on `django-cf` features and configurations, refer to the main [django-cf GitHub repository](https://github.com/G4brym/django-cf).*
